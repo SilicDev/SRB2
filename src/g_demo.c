@@ -54,6 +54,7 @@ demo_file_override_e demofileoverride;
 static UINT8 *demobuffer = NULL;
 static UINT8 *demo_p, *demotime_p;
 static UINT8 *demoend;
+static size_t demolength;
 static UINT8 demoflags;
 UINT16 demoversion;
 boolean singledemo; // quit after playing a demo from cmdline
@@ -1999,6 +2000,20 @@ void G_DeferedPlayDemo(const char *name)
 	COM_BufAddText("\"\n");
 }
 
+static int CheckDemoChecksum(void)
+{
+	UINT8 checksum[17];
+	UINT8 *p = demobuffer+16; // checksum position
+	checksum[16] = 0;
+#ifdef NOMD5
+	return 0; // checksum is random, how do we even handle this?
+#else
+
+	md5_buffer((char*)p+16, demolength - 32, checksum); // make a checksum of everything after the checksum in the file.
+#endif
+	return memcmp(p, checksum, 16);
+}
+
 //
 // Start a demo from a .LMP file or from a wad resource
 //
@@ -2028,7 +2043,8 @@ void G_DoPlayDemo(char *defdemoname)
 	if (FIL_CheckExtension(defdemoname))
 	{
 		//FIL_DefaultExtension(defdemoname, ".lmp");
-		if (!FIL_ReadFile(defdemoname, &demobuffer))
+		demolength = FIL_ReadFile(defdemoname, &demobuffer);
+		if (!demolength)
 		{
 			snprintf(msg, 1024, M_GetText("Failed to read file '%s'.\n"), defdemoname);
 			CONS_Alert(CONS_ERROR, "%s", msg);
@@ -2048,7 +2064,10 @@ void G_DoPlayDemo(char *defdemoname)
 		return;
 	}
 	else // it's an internal demo
+	{
 		demobuffer = demo_p = W_CacheLumpNum(l, PU_STATIC);
+		demolength = W_LumpLength(l);
+	}
 
 	// read demo header
 	gameaction = ga_nothing;
@@ -2085,6 +2104,20 @@ void G_DoPlayDemo(char *defdemoname)
 		demoplayback = false;
 		titledemo = false;
 		return;
+	}
+	if (!(titledemo || demofileoverride == DFILE_OVERRIDE_SKIP))
+	{
+		if (CheckDemoChecksum())
+		{
+			snprintf(msg, 1024, M_GetText("Demo has an invalid checksum and cannot be played.\n\nUse\n\"playdemo %s -force\"\nto play the demo anyway.\n"), pdemoname);
+			CONS_Alert(CONS_ERROR, "%s", msg);
+			M_StartMessage(msg, NULL, MM_NOTHING);
+			Z_Free(pdemoname);
+			Z_Free(demobuffer);
+			demoplayback = false;
+			titledemo = false;
+			return;
+		}
 	}
 	demo_p += 16; // demo checksum
 	if (memcmp(demo_p, "PLAY", 4))
@@ -2361,7 +2394,8 @@ UINT8 G_CheckDemoForError(char *defdemoname)
 	if (FIL_CheckExtension(defdemoname))
 	{
 		//FIL_DefaultExtension(defdemoname, ".lmp");
-		if (!FIL_ReadFile(defdemoname, &demobuffer))
+		demolength = FIL_ReadFile(defdemoname, &demobuffer);
+		if (!demolength)
 		{
 			return DFILE_ERROR_NOTDEMO;
 		}
@@ -2375,6 +2409,7 @@ UINT8 G_CheckDemoForError(char *defdemoname)
 	else // it's an internal demo
 	{
 		demobuffer = demo_p = W_CacheLumpNum(l, PU_STATIC);
+		demolength = W_LumpLength(l);
 	}
 
 	// read demo header
@@ -2396,6 +2431,12 @@ UINT8 G_CheckDemoForError(char *defdemoname)
 		// too old (or new), cannot support
 		return DFILE_ERROR_NOTDEMO;
 	}
+
+	if (CheckDemoChecksum())
+	{
+		return DFILE_ERROR_NOTDEMO;
+	}
+
 	demo_p += 16; // demo checksum
 	if (memcmp(demo_p, "PLAY", 4))
 	{
